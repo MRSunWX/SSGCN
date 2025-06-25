@@ -1,44 +1,15 @@
 import os
+import json
 import numpy as np
 import pickle
 import spacy
-from collections import Counter, deque
+from collections import deque
 from transformers import BertTokenizer
 import torch
-from torch.utils.data import Dataset, DataLoader
-
-# ================== Vocab 类 ==================
-class Vocab(object):
-    def __init__(self, counter, specials=['<pad>', '<unk>']):
-        self.pad_index = 0
-        self.unk_index = 1
-
-        counter = counter.copy()
-        self.itos = list(specials)
-        for tok in specials:
-            counter.pop(tok, None)
-
-        words_freq = sorted(counter.items(), key=lambda x: (x[1], x[0]), reverse=True)
-        for word, freq in words_freq:
-            self.itos.append(word)
-
-        self.stoi = {word: i for i, word in enumerate(self.itos)}
-
-    def __len__(self):
-        return len(self.itos)
-
-    def save(self, path):
-        with open(path, 'wb') as f:
-            pickle.dump(self, f)
-
-    @staticmethod
-    def load(path):
-        with open(path, 'rb') as f:
-            return pickle.load(f)
-
+from torch.utils.data import Dataset
 
 # ================== Tokenizer 类 ==================
-class Tokenizer(object):
+class Tokenizer:
     def __init__(self, pretrained_model='bert-base-uncased', max_length=128):
         self.tokenizer = BertTokenizer.from_pretrained(pretrained_model)
         self.max_length = max_length
@@ -51,14 +22,12 @@ class Tokenizer(object):
             max_length=self.max_length,
             padding='max_length',
             truncation=True,
-            return_tensors='pt',
-            return_offsets_mapping=True
+            return_tensors='pt'
         )
         return {
             'input_ids': encoded['input_ids'].squeeze(0),
             'attention_mask': encoded['attention_mask'].squeeze(0),
-            'token_type_ids': encoded['token_type_ids'].squeeze(0),
-            'offset_mapping': encoded['offset_mapping'].squeeze(0)
+            'token_type_ids': encoded['token_type_ids'].squeeze(0)
         }
 
     def get_aspect_position(self, tokens: list, aspect: str):
@@ -69,9 +38,8 @@ class Tokenizer(object):
         print(f"[Warning] Aspect未对齐: {aspect} in {tokens}")
         return [0]
 
-
 # ================== Dependency Graph 类 ==================
-class DependencyGraph(object):
+class DependencyGraph:
     def __init__(self):
         self.nlp = spacy.load('en_core_web_sm')
 
@@ -81,7 +49,7 @@ class DependencyGraph(object):
         edges = []
         for tok in doc:
             if tok.i == tok.head.i:
-                continue  # skip ROOT
+                continue
             edges.append((tok.head.i, tok.i))
             edges.append((tok.i, tok.head.i))
         return tokens, edges
@@ -134,10 +102,9 @@ class DependencyGraph(object):
         edge_weight = weight[edge_index[0], edge_index[1]]
         return edge_index, edge_weight
 
-
 # ================== Dataset 和 DataLoader ==================
 class ABSADataset(Dataset):
-    def __init__(self, data_path, tokenizer, dep_parser, max_seq_len=128, alpha=1.0, max_dep_dist=3):
+    def __init__(self, data, tokenizer, dep_parser, max_seq_len=128, alpha=1.0, max_dep_dist=3):
         self.tokenizer = tokenizer
         self.dep_parser = dep_parser
         self.max_seq_len = max_seq_len
@@ -147,31 +114,31 @@ class ABSADataset(Dataset):
         self.data = []
         label_map = {'negative': 0, 'neutral': 1, 'positive': 2}
 
-        with open(data_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                sentence, aspect, polarity = line.strip().split('\t')
-                label = label_map[polarity]
+        for d in data:
+            tokens = d['token']
+            aspect = ' '.join(d['aspect'])
+            polarity = d['polarity']
+            label = label_map[polarity]
 
-                tokens, edges = self.dep_parser.parse(sentence)
-                aspect_pos = self.tokenizer.get_aspect_position(tokens, aspect)
-                edge_index, edge_weight = self.dep_parser.build_graph(
-                    edges, node_num=len(tokens), aspect_set=set(aspect_pos),
-                    alpha=self.alpha, max_distance=self.max_dep_dist
-                )
+            sentence = ' '.join(tokens)
+            tokens_parsed, edges = self.dep_parser.parse(sentence)
+            aspect_pos = self.tokenizer.get_aspect_position(tokens_parsed, aspect)
+            edge_index, edge_weight = self.dep_parser.build_graph(
+                edges, node_num=len(tokens_parsed), aspect_set=set(aspect_pos),
+                alpha=self.alpha, max_distance=self.max_dep_dist
+            )
 
-                bert_input = self.tokenizer.encode(sentence, aspect)
+            bert_input = self.tokenizer.encode(sentence, aspect)
 
-                self.data.append({
-                    'input_ids': bert_input['input_ids'],
-                    'attention_mask': bert_input['attention_mask'],
-                    'token_type_ids': bert_input['token_type_ids'],
-                    'aspect_pos': torch.tensor(aspect_pos, dtype=torch.long),
-                    'edge_index': torch.tensor(edge_index, dtype=torch.long),
-                    'edge_weight': torch.tensor(edge_weight, dtype=torch.float),
-                    'label': torch.tensor(label, dtype=torch.long)
-                })
+            self.data.append({
+                'input_ids': bert_input['input_ids'],
+                'attention_mask': bert_input['attention_mask'],
+                'token_type_ids': bert_input['token_type_ids'],
+                'aspect_pos': torch.tensor(aspect_pos, dtype=torch.long),
+                'edge_index': torch.tensor(edge_index, dtype=torch.long),
+                'edge_weight': torch.tensor(edge_weight, dtype=torch.float),
+                'label': torch.tensor(label, dtype=torch.long)
+            })
 
     def __len__(self):
         return len(self.data)
@@ -188,7 +155,3 @@ def collate_fn(batch):
         else:
             batch_out[key] = torch.stack([item[key] for item in batch])
     return batch_out
-
-def build_dataloader(data_path, tokenizer, dep_parser, batch_size=32, shuffle=True):
-    dataset = ABSADataset(data_path, tokenizer, dep_parser)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)
