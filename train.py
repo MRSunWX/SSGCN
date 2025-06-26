@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, ConcatDataset
 from ssgcn import SSGCN  # 从 ssgcn.py 导入 SSGCN
+from data_utils import ABSADataset, Tokenizer, DependencyGraph
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
