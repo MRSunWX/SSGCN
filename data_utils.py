@@ -7,6 +7,8 @@ from collections import deque
 from transformers import BertTokenizer
 import torch
 from torch.utils.data import Dataset
+import glob
+import argparse
 
 # ================== Tokenizer 类 ==================
 class Tokenizer:
@@ -31,9 +33,10 @@ class Tokenizer:
         }
 
     def get_aspect_position(self, tokens: list, aspect: str):
-        aspect_tokens = aspect.split()
-        for i in range(len(tokens) - len(aspect_tokens) + 1):
-            if tokens[i:i + len(aspect_tokens)] == aspect_tokens:
+        aspect_tokens = aspect.lower().split()
+        tokens_lower = [t.lower() for t in tokens]
+        for i in range(len(tokens_lower) - len(aspect_tokens) + 1):
+            if tokens_lower[i:i + len(aspect_tokens)] == aspect_tokens:
                 return list(range(i, i + len(aspect_tokens)))
         print(f"[Warning] Aspect未对齐: {aspect} in {tokens}")
         return [0]
@@ -155,3 +158,110 @@ def collate_fn(batch):
         else:
             batch_out[key] = torch.stack([item[key] for item in batch])
     return batch_out
+
+def load_json_data(json_file):
+    """
+    Load JSON file and convert to ABSADataset-compatible format.
+    """
+    try:
+        with open(json_file, 'r', encoding='utf-8') as f:
+            json_data = json.load(f)
+        
+        processed_data = []
+        for item in json_data:
+            sentence = item['sentence']
+            tokens = sentence.split()
+            aspect = item['aspect'].split()
+            polarity = item['label']
+            
+            processed_data.append({
+                'token': tokens,
+                'aspect': aspect,
+                'polarity': polarity
+            })
+        
+        return processed_data
+    except Exception as e:
+        print(f"Error loading {json_file}: {str(e)}")
+        return []
+
+def save_dataset(dataset, output_file):
+    """
+    Save the processed dataset to a pickle file.
+    """
+    try:
+        with open(output_file, 'wb') as f:
+            pickle.dump(dataset, f)
+        print(f"Successfully saved dataset to {output_file}")
+    except Exception as e:
+        print(f"Error saving {output_file}: {str(e)}")
+
+def process_json_files(input_dir, output_dir, max_seq_len=128, alpha=1.0, max_dep_dist=3):
+    """
+    Process all JSON files in the input directory and save as pickle files.
+    """
+    tokenizer = Tokenizer(pretrained_model='bert-base-uncased', max_length=max_seq_len)
+    dep_parser = DependencyGraph()
+
+    if not os.path.isdir(input_dir):
+        print(f"Error: Directory {input_dir} does not exist.")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    json_files = glob.glob(os.path.join(input_dir, "*.json"))
+
+    if not json_files:
+        print(f"No JSON files found in {input_dir}.")
+        return
+
+    for json_file in json_files:
+        print(f"Processing {json_file}...")
+        data = load_json_data(json_file)
+        if not data:
+            print(f"No valid data in {json_file}. Skipping.")
+            continue
+
+        try:
+            dataset = ABSADataset(
+                data,
+                tokenizer=tokenizer,
+                dep_parser=dep_parser,
+                max_seq_len=max_seq_len,
+                alpha=alpha,
+                max_dep_dist=max_dep_dist
+            )
+        except Exception as e:
+            print(f"Error creating dataset for {json_file}: {str(e)}")
+            continue
+
+        output_file = os.path.join(output_dir, os.path.splitext(os.path.basename(json_file))[0] + '.pkl')
+        save_dataset(dataset, output_file)
+
+def main():
+    parser = argparse.ArgumentParser(description="Process SemEval JSON files into ABSADataset pickle files.")
+    parser.add_argument('--input-dir', default='./dataset/semeval14',
+                        help='Input directory containing JSON files')
+    parser.add_argument('--max-seq-len', type=int, default=128,
+                        help='Maximum sequence length for BERT tokenizer')
+    parser.add_argument('--alpha', type=float, default=1.0,
+                        help='Alpha parameter for dependency graph weights')
+    parser.add_argument('--max-dep-dist', type=int, default=3,
+                        help='Maximum dependency distance for graph construction')
+
+    args = parser.parse_args()
+
+    # 固定输出目录为 dataset/processed/
+    output_dir = './dataset/processed'
+
+    # Process JSON files
+    process_json_files(
+        input_dir=args.input_dir,
+        output_dir=output_dir,
+        max_seq_len=args.max_seq_len,
+        alpha=args.alpha,
+        max_dep_dist=args.max_dep_dist
+    )
+
+if __name__ == "__main__":
+    main()

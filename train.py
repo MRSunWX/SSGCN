@@ -2,23 +2,31 @@ import os
 import random
 import argparse
 import numpy as np
-import json
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from data_utils import Tokenizer, DependencyGraph, ABSADataset, collate_fn
-from ssgcn import SSGCN
+from torch.utils.data import DataLoader, ConcatDataset
+from ssgcn import SSGCN  # 从 ssgcn.py 导入 SSGCN
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 from transformers import get_linear_schedule_with_warmup
 from torch.optim import AdamW
 from tqdm import tqdm
-from sklearn.model_selection import train_test_split
+import pickle
 
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+def collate_fn(batch):
+    batch_out = {}
+    keys = batch[0].keys()
+    for key in keys:
+        if key in ['edge_index', 'edge_weight', 'aspect_pos']:
+            batch_out[key] = [item[key] for item in batch]
+        else:
+            batch_out[key] = torch.stack([item[key] for item in batch])
+    return batch_out
 
 def evaluate(model, dataloader, criterion, device):
     model.eval()
@@ -46,58 +54,85 @@ def evaluate(model, dataloader, criterion, device):
     f1 = f1_score(all_labels, all_preds, average='macro')
     return total_loss / len(dataloader), acc, f1
 
-def build_dataloader_from_json(data_path, tokenizer, dep_parser, batch_size=16, shuffle=True, split='train'):
-    with open(data_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    if split in ['train', 'valid']:
-        train_data, valid_data = train_test_split(data, test_size=0.1, random_state=1000)
-        data = train_data if split == 'train' else valid_data
-
-    dataset = ABSADataset(data, tokenizer, dep_parser)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=(split == 'train'), collate_fn=collate_fn)
-
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, default='./dataset/Restaurants_corenlp')
-    parser.add_argument('--bert_model', type=str, default='bert-base-uncased')
-    parser.add_argument('--num_classes', type=int, default=3)
-    parser.add_argument('--dropout', type=float, default=0.5)
-    parser.add_argument('--hidden_dim', type=int, default=300)
-    parser.add_argument('--num_layers', type=int, default=2)
-    parser.add_argument('--max_hop', type=int, default=3)
-    parser.add_argument('--alpha', type=float, default=0.8)
-
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--lr_bert', type=float, default=2e-5)
-    parser.add_argument('--lr_other', type=float, default=1e-3)
-    parser.add_argument('--l2reg', type=float, default=1e-5)
-    parser.add_argument('--num_epochs', type=int, default=20)
-    parser.add_argument('--patience', type=int, default=5)
-    parser.add_argument('--warmup_ratio', type=float, default=0.1)
-
-    parser.add_argument('--seed', type=int, default=1000)
-    parser.add_argument('--output_dir', type=str, default='./outputs/ssgcn-Restaurants')
+    parser = argparse.ArgumentParser(description="Train SSGCN model on SemEval dataset")
+    parser.add_argument('--data-dir', type=str, default='./dataset/processed', help='Directory containing .pkl files')
+    parser.add_argument('--bert-model', type=str, default='bert-base-uncased', help='Pretrained BERT model')
+    parser.add_argument('--num-classes', type=int, default=3, help='Number of classes (negative, neutral, positive)')
+    parser.add_argument('--dropout', type=float, default=0.5, help='Dropout rate')
+    parser.add_argument('--hidden-dim', type=int, default=300, help='Hidden dimension size')
+    parser.add_argument('--num-layers', type=int, default=2, help='Number of GCN layers')
+    parser.add_argument('--max-hop', type=int, default=3, help='Maximum dependency hop distance')
+    parser.add_argument('--alpha', type=float, default=0.8, help='DSW distance decay factor')
+    parser.add_argument('--batch-size', type=int, default=16, help='Batch size for training')
+    parser.add_argument('--lr-bert', type=float, default=2e-5, help='Learning rate for BERT parameters')
+    parser.add_argument('--lr-other', type=float, default=1e-3, help='Learning rate for other parameters')
+    parser.add_argument('--l2reg', type=float, default=1e-5, help='L2 regularization weight')
+    parser.add_argument('--num-epochs', type=int, default=20, help='Number of training epochs')
+    parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping')
+    parser.add_argument('--warmup-ratio', type=float, default=0.1, help='Warmup ratio for learning rate scheduler')
+    parser.add_argument('--seed', type=int, default=1000, help='Random seed')
+    parser.add_argument('--output-dir', type=str, default='./outputs/ssgcn', help='Output directory for model')
 
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
     set_seed(args.seed)
 
-    tokenizer = Tokenizer(pretrained_model=args.bert_model)
-    dep_parser = DependencyGraph()
+    # 加载数据集
+    train_files = [
+        os.path.join(args.data_dir, 'Restaurants_Train.pkl'),
+        os.path.join(args.data_dir, 'Laptops_Train.pkl')
+    ]
+    test_files = [
+        os.path.join(args.data_dir, 'Restaurants_Test.pkl'),
+        os.path.join(args.data_dir, 'Laptops_Test.pkl')
+    ]
 
-    train_path = os.path.join(args.data_dir, 'train.json')
-    test_path = os.path.join(args.data_dir, 'test.json')
+    train_datasets = []
+    test_datasets = []
 
-    train_loader = build_dataloader_from_json(train_path, tokenizer, dep_parser, batch_size=args.batch_size, split='train')
-    valid_loader = build_dataloader_from_json(train_path, tokenizer, dep_parser, batch_size=args.batch_size, split='valid')
-    test_loader = build_dataloader_from_json(test_path, tokenizer, dep_parser, batch_size=args.batch_size, split='test')
+    for train_file in train_files:
+        if os.path.exists(train_file):
+            with open(train_file, 'rb') as f:
+                dataset = pickle.load(f)
+                train_datasets.append(dataset)
+        else:
+            print(f"Warning: {train_file} not found")
 
+    for test_file in test_files:
+        if os.path.exists(test_file):
+            with open(test_file, 'rb') as f:
+                dataset = pickle.load(f)
+                test_datasets.append(dataset)
+        else:
+            print(f"Warning: {test_file} not found")
+
+    if not train_datasets:
+        raise ValueError("No training datasets found")
+    if not test_datasets:
+        raise ValueError("No test datasets found")
+
+    # 从训练集中划分验证集（10%）
+    train_dataset = ConcatDataset(train_datasets)
+    test_dataset = ConcatDataset(test_datasets)
+    train_size = int(0.9 * len(train_dataset))
+    valid_size = len(train_dataset) - train_size
+    train_dataset, valid_dataset = torch.utils.data.random_split(
+        train_dataset, [train_size, valid_size], generator=torch.Generator().manual_seed(args.seed)
+    )
+
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)
+
+    # 初始化模型
     model = SSGCN(args).to('cuda' if torch.cuda.is_available() else 'cpu')
     device = next(model.parameters()).device
 
     criterion = nn.CrossEntropyLoss()
 
+    # 优化器和学习率调度
     no_decay = ['bias', 'LayerNorm.weight']
     bert_params = list(model.bert.named_parameters())
     other_params = [p for n, p in model.named_parameters() if not n.startswith('bert')]
@@ -128,6 +163,7 @@ def main():
         num_training_steps=total_steps
     )
 
+    # 训练循环
     best_f1 = 0
     patience_counter = 0
     save_path = os.path.join(args.output_dir, 'best_model.pt')
@@ -170,6 +206,7 @@ def main():
                 print('>> Early stopping triggered.')
                 break
 
+    # 最终测试
     print('>> Loading best model for final evaluation...')
     model.load_state_dict(torch.load(save_path))
     test_loss, test_acc, test_f1 = evaluate(model, test_loader, criterion, device)
