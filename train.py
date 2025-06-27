@@ -95,7 +95,7 @@ def train_trial(trial, args, train_loader, valid_loader, test_loader, device, wr
         model.train()
         total_loss = 0
 
-        for batch in tqdm(train_loader, desc=f'Trial {trial.number} Epoch {epoch+1}'):
+        for batch_idx, batch in enumerate(tqdm(train_loader, desc=f'Trial {trial.number} Epoch {epoch+1}')):
             for key in batch:
                 if isinstance(batch[key], list):
                     batch[key] = [item.to(device) for item in batch[key]]
@@ -112,6 +112,11 @@ def train_trial(trial, args, train_loader, valid_loader, test_loader, device, wr
             scheduler.step()
 
             total_loss += loss.item()
+
+            # 记录学习率到 TensorBoard
+            global_step = epoch * len(train_loader) + batch_idx
+            writer.add_scalar(f'Trial_{trial.number}/LR_BERT', optimizer.param_groups[0]['lr'], global_step)
+            writer.add_scalar(f'Trial_{trial.number}/LR_Other', optimizer.param_groups[2]['lr'], global_step)
 
         avg_train_loss = total_loss / len(train_loader)
         val_loss, val_acc, val_f1 = evaluate(model, valid_loader, criterion, device)
@@ -158,7 +163,7 @@ def train_trial(trial, args, train_loader, valid_loader, test_loader, device, wr
             logits = model(batch)
             preds = torch.argmax(logits, dim=1).cpu().tolist()
             all_preds.extend(preds)
-            all_labels.extend(labels.cpu().tolist())
+            all_labels.extend(batch['label'].cpu().tolist())  # 修正此处：labels 改为 batch['label']
     report = classification_report(all_labels, all_preds, target_names=['negative', 'neutral', 'positive'], output_dict=True)
     logging.info(f'Trial {trial.number} | Detailed Test Classification Report:\n{report}')
 
@@ -183,6 +188,9 @@ def objective(trial, args, train_dataset, valid_dataset, test_dataset, output_di
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
+
+    # 在此处设置初始 batch_size
+    args.batch_size = trial.suggest_categorical('batch_size', [8, 16, 32])
 
     # 创建 DataLoader
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
@@ -209,6 +217,7 @@ def main():
     parser.add_argument('--output-dir', type=str, default='./outputs/ssgcn', help='Output directory for model')
     parser.add_argument('--n-trials', type=int, default=10, help='Number of Optuna trials')
     parser.add_argument('--log-dir', type=str, default='./logs/tensorboard', help='TensorBoard log directory')
+    parser.add_argument('--alpha', type=float, default=1.0, help='Alpha parameter for dependency graph weights')
 
     args = parser.parse_args()
 
@@ -255,7 +264,7 @@ def main():
         print(f'  {key}: {value}')
 
     # 保存最佳模型到 output_dir
-    best_model_path = os.path.join(args.log_dir, f'trial_{best_trial.number}', 'trial_{}_best_model.pt'.format(best_trial.number))
+    best_model_path = os.path.join(args.log_dir, f'trial_{best_trial.number}', f'trial_{best_trial.number}_best_model.pt')
     final_model_path = os.path.join(args.output_dir, 'best_model.pt')
     os.rename(best_model_path, final_model_path)
     print(f'Best model saved to {final_model_path}')
