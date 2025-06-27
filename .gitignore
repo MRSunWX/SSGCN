@@ -1,38 +1,99 @@
+# Python 相关
 __pycache__/
-*.dat
-*.h5
-*log*
-glove*
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.so
+*.egg
+*.whl
 
-# OSX
-#
-.DS_Store
+# 虚拟环境
+env/
+venv/
+.venv/
+pytorch/
+*.env
 
-# Windows thumbnail db
-Thumbs.db
+# Jupyter Notebook
+*.ipynb_checkpoints/
+*.ipynb
 
-# IJ
-#
-# Local configuration file (sdk path, etc)
-/local.properties
-# Eclipse project files
-.classpath/
-.project/
-# Intellij project files
-*.iml
-*.ipr
-*.iws
+# 日志和临时文件
+*.log
+*.log.*
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# IDE 和编辑器
+.vscode/
 .idea/
-.gradle/
-*build
-*.iml
-#built application files
-*.apk
-*.ap_
-# files for the dex VM
-*.dex
-# Java class files
-*.class
-# generated files
-bin/
-gen/
+*.sublime-workspace
+*.sublime-project
+
+# 操作系统生成的文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 数据集和处理后的文件
+dataset/processed/
+*.pkl
+*.pickle
+
+# 模型输出和检查点
+outputs/
+*.pt
+*.pth
+*.model
+checkpoints/
+
+# TensorBoard 和日志
+logs/
+tensorboard_laptops/
+*.tfevents.*
+
+# 依赖和环境
+*.egg-info
+pip-wheel-metadata/
+wheels/
+*.whl
+
+# spaCy 模型
+en_core_web_sm/
+
+# 缓存文件
+*.cache
+*.cache/
+.cache/
+*.bak
+*.swp
+
+# 测试和实验输出
+*.out
+*.err
+*.txt
+*.csv
+*.tsv
+*.jsonl
+
+# 压缩文件
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# 其他不需要提交的文件
+*.DS_Store
+*.Trash-*
+*.npy
+*.npz
+*.h5
+*.hdf5
