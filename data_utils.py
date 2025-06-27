@@ -9,12 +9,14 @@ import torch
 from torch.utils.data import Dataset
 import glob
 import argparse
+from fuzzywuzzy import fuzz  # 引入 fuzzywuzzy 进行模糊匹配
 
 # ================== Tokenizer 类 ==================
 class Tokenizer:
     def __init__(self, pretrained_model='bert-base-uncased', max_length=128):
         self.tokenizer = BertTokenizer.from_pretrained(pretrained_model)
         self.max_length = max_length
+        self.nlp = spacy.load('en_core_web_sm')  # 用于词形还原
 
     def encode(self, sentence, aspect):
         encoded = self.tokenizer.encode_plus(
@@ -33,12 +35,51 @@ class Tokenizer:
         }
 
     def get_aspect_position(self, tokens: list, aspect: str):
+        """
+        改进的 aspect 定位方法，解决未对齐问题。
+        返回 aspect 在 tokens 中的位置（索引列表）。
+        """
+        # 将 tokens 和 aspect 转换为小写以进行大小写无关匹配
         aspect_tokens = aspect.lower().split()
         tokens_lower = [t.lower() for t in tokens]
+
+        # 方法 1：精确匹配
         for i in range(len(tokens_lower) - len(aspect_tokens) + 1):
             if tokens_lower[i:i + len(aspect_tokens)] == aspect_tokens:
                 return list(range(i, i + len(aspect_tokens)))
-        print(f"[Warning] Aspect未对齐: {aspect} in {tokens}")
+
+        # 方法 2：模糊匹配（使用 fuzzywuzzy 比较相似度）
+        best_score = 0
+        best_pos = [0]
+        for i in range(len(tokens_lower) - len(aspect_tokens) + 1):
+            candidate = ' '.join(tokens_lower[i:i + len(aspect_tokens)])
+            score = fuzz.ratio(candidate, aspect.lower())
+            if score > best_score and score > 80:  # 阈值 80 可调整
+                best_score = score
+                best_pos = list(range(i, i + len(aspect_tokens)))
+
+        if best_score > 80:
+            print(f"[Info] 模糊匹配成功: aspect='{aspect}', tokens={tokens[i:i + len(aspect_tokens)]}, score={best_score}")
+            return best_pos
+
+        # 方法 3：词形还原匹配
+        doc = self.nlp(' '.join(tokens))
+        tokens_lemmatized = [tok.lemma_.lower() for tok in doc]
+        aspect_doc = self.nlp(aspect.lower())
+        aspect_lemmatized = [tok.lemma_.lower() for tok in aspect_doc]
+
+        for i in range(len(tokens_lemmatized) - len(aspect_lemmatized) + 1):
+            if tokens_lemmatized[i:i + len(aspect_lemmatized)] == aspect_lemmatized:
+                return list(range(i, i + len(aspect_lemmatized)))
+
+        # 方法 4：单词部分匹配（当 aspect 是短语的子集）
+        for i in range(len(tokens_lower)):
+            if any(at in tokens_lower[i] for at in aspect_tokens):
+                print(f"[Info] 部分匹配: aspect='{aspect}', matched token='{tokens[i]}' at index {i}")
+                return [i]
+
+        # 最终回退：返回 [0] 并记录警告
+        print(f"[Warning] Aspect未对齐: aspect='{aspect}', tokens={tokens}")
         return [0]
 
 # ================== Dependency Graph 类 ==================

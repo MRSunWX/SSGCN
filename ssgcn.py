@@ -5,6 +5,11 @@ from transformers import BertModel
 from torch_geometric.nn import GCNConv
 
 class SSGCN(nn.Module):
+    """
+    Span-based Syntax Graph Convolutional Network for Aspect-based Sentiment Analysis.
+    Combines multi-view Span Attention with syntax-guided Graph Convolutional Networks (GCN)
+    to perform aspect-based sentiment analysis.
+    """
     def __init__(self, args):
         super(SSGCN, self).__init__()
         self.args = args
@@ -22,7 +27,7 @@ class SSGCN(nn.Module):
         # Span Attention
         self.span_linear = nn.Linear(hidden_size, hidden_size)
 
-        # Syntax-GCN（两层）
+        # 语法图卷积层（两层）
         self.gcn1 = GCNConv(hidden_size, hidden_size)
         self.gcn2 = GCNConv(hidden_size, hidden_size)
 
@@ -86,7 +91,7 @@ class SSGCN(nn.Module):
             span_out = multi_span_outs.mean(dim=0)
             span_reps.append(span_out)
 
-            # === Syntax-GCN ===
+            # === 语法图卷积 ===
             edge_index = edge_index_list[i]
             edge_weight = edge_weight_list[i]
 
